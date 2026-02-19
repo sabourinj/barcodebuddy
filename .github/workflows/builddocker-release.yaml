@@ -15,7 +15,7 @@ jobs:
     steps:
     - uses: oprypin/find-latest-tag@v1
       with:
-        repository: Forceu/barcodebuddy 
+        repository: sabourinj/barcodebuddy 
         releases-only: true 
         prefix: 'v'
       id: latestversion
