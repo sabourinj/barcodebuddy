@@ -15,7 +15,7 @@ jobs:
     steps:
     - uses: oprypin/find-latest-tag@v1
       with:
-        repository: Forceu/barcodebuddy 
+        repository: sabourinj/barcodebuddy 
         releases-only: true 
         prefix: 'v'
       id: latestversion
@@ -27,5 +27,5 @@ jobs:
         curl -u ":$TOKEN" \
         -X POST \
         -H "Accept: application/vnd.github.v3+json" \
-        https://api.github.com/repos/forceu/barcodebuddy-docker/actions/workflows/docker-publish-dev.yml/dispatches \
+        https://api.github.com/repos/sabourinj/barcodebuddy-docker/actions/workflows/docker-publish-dev.yml/dispatches \
         -d '{"ref": "master", "inputs": {"version": "${{ steps.latestversion.outputs.tag }}"}}'
