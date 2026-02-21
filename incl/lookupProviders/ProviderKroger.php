@@ -12,7 +12,7 @@ if (!defined('IS_included')) {
  * CLIENT_ID:CLIENT_SECRET
  * * (Separate the two values with a single colon and no spaces)
  */
-class ProviderKroger implements ILookupProvider
+class ProviderKroger extends LookupProvider
 {
     // API Endpoints
     private $tokenUrl = 'https://api.kroger.com/v1/connect/oauth2/token';
