@@ -1,142 +1,90 @@
 <?php
 
-if (!defined('IS_included')) {
-    exit();
-}
+require_once __DIR__ . "/../api.inc.php";
 
-/**
- * Provider for Kroger API
- * * SETUP INSTRUCTION:
- * In the Barcode Buddy UI settings for this provider, enter your credentials
- * in the following format:
- * CLIENT_ID:CLIENT_SECRET
- * * (Separate the two values with a single colon and no spaces)
- */
-class ProviderKroger extends LookupProvider
-{
-    // API Endpoints
-    private $tokenUrl = 'https://api.kroger.com/v1/connect/oauth2/token';
-    private $productUrl = 'https://api.kroger.com/v1/products';
+class ProviderKroger extends LookupProvider {
+
+    private $token = null;
+
+    function __construct(string $apiKey = null) {
+        parent::__construct($apiKey);
+        $this->providerName      = "Kroger";
+        $this->providerConfigKey = "LOOKUP_USE_KROGER";
+    }
 
     /**
-     * Main lookup function called by BarcodeBuddy
+     * Looks up a barcode
+     * @param string $barcode The barcode to lookup
+     * @return array|null Name of product, null if none found
      */
-    public function lookup($barcode)
-    {
-        // 1. Retrieve Credentials from Barcode Buddy Settings
-        // We expect the user to input "ClientID:ClientSecret" in the UI key field.
-        $configString = getSetting('LOOKUP_PROVIDER_KROGER_KEY');
+    public function lookupBarcode(string $barcode): ?array {
+        if (!$this->isProviderEnabled())
+            return null;
 
-        if (empty($configString) || strpos($configString, ':') === false) {
-            error_log("ProviderKroger: Invalid or missing API credentials. Format must be ClientID:ClientSecret");
-            return false;
+        // Ensure we have an API key configured (format: CLIENT_ID:CLIENT_SECRET)
+        if (empty($this->apiKey) || strpos($this->apiKey, ':') === false) {
+            error_log("KrogerProvider: API Key must be formatted as CLIENT_ID:CLIENT_SECRET in the Web UI.");
+            return null;
         }
 
-        list($clientId, $clientSecret) = explode(':', $configString, 2);
-        
-        // Trim whitespace just in case user added spaces
-        $clientId = trim($clientId);
-        $clientSecret = trim($clientSecret);
-
-        // 2. Authenticate and get Access Token
-        $accessToken = $this->getAccessToken($clientId, $clientSecret);
-        
-        if (!$accessToken) {
-            error_log("ProviderKroger: Failed to retrieve access token.");
-            return false;
+        // Get the OAuth2 token
+        $token = $this->getAccessToken();
+        if (!$token) {
+            return null; 
         }
 
-        // 3. Lookup Product by UPC
-        $url = $this->productUrl . '?filter.productId=' . $barcode;
+        // Kroger expects 13-digit UPCs, so we pad it
+        $paddedBarcode = str_pad($barcode, 13, '0', STR_PAD_LEFT);
+        $url = 'https://api.kroger.com/v1/products?filter.term=' . urlencode($paddedBarcode);
 
+        // We use cURL here instead of $this->execute() to pass the custom Bearer Token
         $ch = curl_init();
         curl_setopt($ch, CURLOPT_URL, $url);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_HTTPHEADER, [
             'Accept: application/json',
-            'Authorization: Bearer ' . $accessToken
+            'Authorization: Bearer ' . $token
         ]);
-        
+
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         curl_close($ch);
 
-        if ($httpCode !== 200 || !$response) {
-            // Only log errors if it's not a 404 (product not found)
-            if ($httpCode !== 404) {
-                error_log("ProviderKroger: API request failed with code $httpCode");
-            }
-            return false;
-        }
-
-        $data = json_decode($response, true);
-
-        // 4. Parse Response
-        if (!empty($data['data'])) {
-            $product = $data['data'][0];
+        if ($httpCode === 200 && $response) {
+            $data = json_decode($response, true);
             
-            $name = isset($product['description']) ? $product['description'] : 'Unknown Product';
-            if (isset($product['brand'])) {
-                $name = $product['brand'] . ' - ' . $name;
-            }
-            
-            // Image parsing logic
-            $imageUrl = '';
-            if (!empty($product['images'])) {
-                foreach ($product['images'] as $imgObj) {
-                    $perspective = isset($imgObj['perspective']) ? $imgObj['perspective'] : '';
-                    if ($perspective === 'front' && !empty($imgObj['sizes'])) {
-                        foreach ($imgObj['sizes'] as $sizeObj) {
-                            if ($sizeObj['size'] === 'medium' || $sizeObj['size'] === 'large') {
-                                $imageUrl = $sizeObj['url'];
-                                break 2;
-                            }
-                        }
-                    }
-                }
-                // Fallback
-                if (empty($imageUrl) && !empty($product['images'][0]['sizes'][0]['url'])) {
-                    $imageUrl = $product['images'][0]['sizes'][0]['url'];
+            if (!empty($data['data']) && count($data['data']) > 0) {
+                // Grab the description of the first matched product
+                $productName = $data['data'][0]['description'] ?? null;
+                
+                if ($productName) {
+                    // Use BarcodeBuddy's native return helper
+                    return self::createReturnArray(sanitizeString($productName));
                 }
             }
-
-            return [
-                'name' => $name,
-                'description' => $name,
-                'image' => $imageUrl
-            ];
         }
 
-        return false;
+        return null;
     }
 
     /**
-     * Helper to get OAuth2 Access Token
+     * Authenticates with Kroger and returns a Bearer Token.
      */
-    private function getAccessToken($id, $secret)
-    {
-        // Simple file-based caching to prevent hitting Kroger rate limits (tokens last 30 mins)
-        // We use the system temp directory or a specific cache location if available
-        $cacheFile = sys_get_temp_dir() . '/bb_kroger_token_' . md5($id) . '.json';
-        
-        if (file_exists($cacheFile)) {
-            $cached = json_decode(file_get_contents($cacheFile), true);
-            if ($cached && isset($cached['expires_at']) && time() < $cached['expires_at']) {
-                return $cached['access_token'];
-            }
+    private function getAccessToken(): ?string {
+        if ($this->token !== null) {
+            return $this->token;
         }
 
-        $ch = curl_init();
-        $credentials = base64_encode($id . ':' . $secret);
+        // Split the API key from BarcodeBuddy's UI settings into ID and Secret
+        list($clientId, $clientSecret) = explode(':', $this->apiKey, 2);
         
-        $postData = http_build_query([
-            'grant_type' => 'client_credentials',
-            'scope'      => 'product.compact' 
-        ]);
+        // Kroger requires the basic auth credentials to be base64 encoded
+        $credentials = base64_encode(trim($clientId) . ':' . trim($clientSecret));
 
-        curl_setopt($ch, CURLOPT_URL, $this->tokenUrl);
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, 'https://api.kroger.com/v1/connect/oauth2/token');
         curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, $postData);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, 'grant_type=client_credentials&scope=product.compact');
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_HTTPHEADER, [
             'Content-Type: application/x-www-form-urlencoded',
@@ -148,15 +96,13 @@ class ProviderKroger extends LookupProvider
         curl_close($ch);
 
         if ($httpCode === 200 && $response) {
-            $json = json_decode($response, true);
-            if (isset($json['access_token'])) {
-                // Save to cache
-                $json['expires_at'] = time() + ($json['expires_in'] - 60); // Expire 1 min early
-                file_put_contents($cacheFile, json_encode($json));
-                return $json['access_token'];
+            $data = json_decode($response, true);
+            if (isset($data['access_token'])) {
+                $this->token = $data['access_token'];
+                return $this->token;
             }
         }
 
-        return false;
+        return null;
     }
 }
